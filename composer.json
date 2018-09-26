@@ -1,0 +1,23 @@
+{
+    "name": "kuria/options",
+    "description": "Resolve structured arrays according to the specified set of options",
+    "keywords": ["options", "configuration", "resolver", "validator", "defaults", "normalizer", "nested", "deep", "recursive"],
+    "license": "MIT",
+    "require": {
+        "php": ">=7.1",
+        "kuria/debug": "^4.0"
+    },
+    "require-dev": {
+        "kuria/dev-meta": "^0.6"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kuria\\Options\\": "src"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Kuria\\Options\\": "tests"
+        }
+    }
+}

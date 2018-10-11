@@ -9,7 +9,7 @@ abstract class OptionTest extends Test
 {
     use OptionAssertionTrait;
 
-    abstract protected function createOption(string $name): Option;
+    abstract protected function createOption(string $name): OptionDefinition;
 
     /**
      * @dataProvider provideFluentMethodCalls
@@ -82,6 +82,25 @@ abstract class OptionTest extends Test
                 ],
                 [
                     'allowEmpty' => false,
+                ],
+            ],
+
+            'normalize' => [
+                [
+                    ['normalize', $callbackA],
+                ],
+                [
+                    'normalizers' => [$callbackA],
+                ],
+            ],
+
+            'multiple normalizers' => [
+                [
+                    ['normalize', $callbackA],
+                    ['normalize', $callbackB],
+                ],
+                [
+                    'normalizers' => [$callbackA, $callbackB],
                 ],
             ],
 

@@ -5,20 +5,20 @@ namespace Kuria\Options\Option;
 /**
  * Node option
  *
- * The public properties are read-only. Use OptionFactory to build the instances.
+ * The public properties are read-only. Use OptionFactory to build instances.
  *
- * @see \Kuria\Options\OptionFactory
+ * @see \Kuria\Options\Option
  */
-class NodeOption extends Option
+class NodeOption extends OptionDefinition
 {
     /** @var array|null read-only */
     public $default;
 
-    /** @var Option[] name-indexed, read-only */
+    /** @var OptionDefinition[] name-indexed, read-only */
     public $children;
 
     /**
-     * @param Option[] $children name-indexed
+     * @param OptionDefinition[] $children name-indexed
      */
     function __construct(string $name, array $children)
     {

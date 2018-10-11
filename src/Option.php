@@ -2,11 +2,11 @@
 
 namespace Kuria\Options;
 
-use Kuria\Options\Option\Option;
+use Kuria\Options\Option\OptionDefinition;
 use Kuria\Options\Option\NodeOption;
 use Kuria\Options\Option\LeafOption;
 
-abstract class OptionFactory
+abstract class Option
 {
     /**
      * Create a mixed option
@@ -195,7 +195,7 @@ abstract class OptionFactory
      *
      * @return NodeOption
      */
-    static function node(string $name, Option ...$options): NodeOption
+    static function node(string $name, OptionDefinition ...$options): NodeOption
     {
         $children = [];
 
@@ -213,7 +213,7 @@ abstract class OptionFactory
      *
      * @return NodeOption
      */
-    static function nodeList(string $name, Option ...$options): NodeOption
+    static function nodeList(string $name, OptionDefinition ...$options): NodeOption
     {
         $option = static::node($name, ...$options);
         $option->list = true;

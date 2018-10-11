@@ -13,14 +13,14 @@ use Kuria\Options\Error\NormalizerError;
 use Kuria\Options\Error\UnknownOptionError;
 use Kuria\Options\Exception\NormalizerException;
 use Kuria\Options\Exception\ResolverException;
-use Kuria\Options\Option\Option;
+use Kuria\Options\Option\OptionDefinition;
 use Kuria\Options\Option\LeafOption;
 use PHPUnit\Framework\AssertionFailedError;
 use PHPUnit\Framework\ExpectationFailedException;
 
 class ResolverTest extends Test
 {
-    function testShouldManipulateOptions()
+    function testShouldAddOptions()
     {
         $resolver = new Resolver();
 
@@ -43,16 +43,6 @@ class ResolverTest extends Test
         $this->assertSame($newBaz, $resolver->getOption('baz'));
         $this->assertNull($resolver->getOption('nonexistent'));
         $this->assertSame(['foo' => $foo, 'bar' => $bar, 'baz' => $newBaz], $resolver->getOptions());
-
-        $resolver->removeOption('baz');
-        $this->assertNull($resolver->getOption('baz'));
-        $this->assertFalse($resolver->hasOption('baz'));
-        $this->assertSame(['foo' => $foo, 'bar' => $bar], $resolver->getOptions());
-
-        $resolver->clearOptions();
-        $this->assertFalse($resolver->hasOption('foo'));
-        $this->assertFalse($resolver->hasOption('bar'));
-        $this->assertSame([], $resolver->getOptions());
     }
 
     function testShouldRejectNonArrayData()
@@ -78,6 +68,7 @@ class ResolverTest extends Test
                 $resolver,
                 ['option' => $validValue],
                 null,
+                [],
                 "expected success with valid value \"{$key}\""
             );
         }
@@ -100,6 +91,7 @@ class ResolverTest extends Test
                 $resolver,
                 ['option' => $emptyValue],
                 null,
+                [],
                 "expected success with empty value \"{$key}\""
             );
         }
@@ -167,7 +159,7 @@ class ResolverTest extends Test
     function testShouldResolveListOption(array $typeInfo)
     {
         $this->assertResolveSuccess(
-            $this->createResolver(OptionFactory::list('option', $typeInfo['type'])),
+            $this->createResolver(Option::list('option', $typeInfo['type'])),
             ['option' => array_merge($typeInfo['validValues'], $typeInfo['emptyValues'])]
         );
     }
@@ -189,7 +181,7 @@ class ResolverTest extends Test
         }
 
         $this->assertResolveFailure(
-            $this->createResolver(OptionFactory::list('option', $typeInfo['type'])),
+            $this->createResolver(Option::list('option', $typeInfo['type'])),
             ['option' => $typeInfo['invalidValues']],
             $expectedErrors
         );
@@ -201,7 +193,7 @@ class ResolverTest extends Test
     function testShouldRejectNullValuesInListOption(array $typeInfo)
     {
         $this->assertResolveFailure(
-            $this->createResolver(OptionFactory::list('option', $typeInfo['type'])),
+            $this->createResolver(Option::list('option', $typeInfo['type'])),
             ['option' => $typeInfo['validValues'] + ['null_item' => null]],
             [(new InvalidTypeError($typeInfo['type'], false, null))->at(['option', 'null_item'])]
         );
@@ -224,7 +216,7 @@ class ResolverTest extends Test
         }
 
         $this->assertResolveFailure(
-            $this->createResolver(OptionFactory::list('option', $typeInfo['type'])),
+            $this->createResolver(Option::list('option', $typeInfo['type'])),
             ['option' => $typeInfo['emptyValues']],
             $expectedErrors
         );
@@ -236,31 +228,104 @@ class ResolverTest extends Test
     function testShouldAcceptNullListIfOptionIsNullable(array $typeInfo)
     {
         $this->assertResolveSuccess(
-            $this->createResolver(OptionFactory::list('option', $typeInfo['type'])->nullable()),
+            $this->createResolver(Option::list('option', $typeInfo['type'])->nullable()),
             ['option' => null]
         );
     }
 
-    function testShouldCallValidators()
+    function testShouldNormalizeOption()
+    {
+        $resolver = $this->createResolver(
+            Option::string('string')
+                ->normalize(static function (string $value) {
+                    static::assertSame(1, func_num_args(), 'Expected a single normalizer argument');
+
+                    return $value . '.bar';
+                })
+                ->normalize(static function (string $value) {
+                    static::assertSame(1, func_num_args(), 'Expected a single normalizer argument');
+
+                    return $value . '.baz';
+                })
+        );
+
+        $this->assertResolveSuccess($resolver, ['string' => 'foo'], ['string' => 'foo.bar.baz']);
+    }
+
+    function testShouldNormalizeOptionWithContext()
+    {
+        $resolver = $this->createResolver(
+            Option::any('option')->normalize(static function ($value, $foo, $bar) {
+                static::assertSame('value', $value);
+                static::assertSame('foo', $foo);
+                static::assertSame(123, $bar);
+
+                return $value;
+            })
+        );
+
+        $this->assertResolveSuccess($resolver, ['option' => 'value'], null, ['foo', 123]);
+    }
+
+    function testShouldHandleNormalizerException()
+    {
+        $errors = [new InvalidOptionError('foo'), new InvalidOptionError('bar'), new InvalidOptionError('baz')];
+        $exception = new NormalizerException('test exception', $errors);
+        $this->removeExceptionTrace($exception);
+
+        $resolver = $this->createResolver(
+            Option::any('option')
+                ->normalize(static function () use ($exception) {
+                    throw $exception;
+                })
+                ->normalize(static function () {
+                    static::fail('Normalization should stop after first exception');
+                })
+        );
+
+        $this->assertResolveFailure($resolver, ['option' => 'value'], $errors);
+    }
+
+    function testShouldNotNormalizeOptionWithInvalidValue()
+    {
+        $resolver = $this->createResolver(
+            Option::string('string')->normalize(static function () {
+                self::fail('Normalizers should not be called with invalid values');
+            })
+        );
+
+        $this->expectException(ResolverException::class);
+
+        $resolver->resolve(['string' => 123]);
+    }
+
+    function testShouldValidateOption()
     {
         $validatorCalled = false;
         $validator2Called = false;
         $listValidatorCalled = false;
 
         $resolver = $this->createResolver(
-            OptionFactory::any('option')
-                ->validate(static function ($value) use (&$validatorCalled) {
+            Option::any('option')
+                ->validate(static function ($value) use (&$validatorCalled, &$validator2Called) {
+                    static::assertSame(1, func_num_args(), 'Expected a single validator argument');
+                    static::assertFalse($validatorCalled, 'Each validator should be called only once');
+                    static::assertFalse($validator2Called, 'Expected first validator to be called first');
                     static::assertSame('value', $value);
 
                     $validatorCalled = true;
                 })
-                ->validate(static function ($value) use (&$validator2Called) {
+                ->validate(static function ($value) use (&$validatorCalled, &$validator2Called) {
+                    static::assertSame(1, func_num_args(), 'Expected a single validator argument');
+                    static::assertTrue($validatorCalled, 'Expected second validator to be called after the first');
+                    static::assertFalse($validator2Called, 'Each validator should be called only once');
                     static::assertSame('value', $value);
 
                     $validator2Called = true;
                 }),
-            OptionFactory::list('listOption', null)
+            Option::list('listOption', null)
                 ->validate(static function ($value) use (&$listValidatorCalled) {
+                    static::assertSame(1, func_num_args(), 'Expected a single validator argument');
                     static::assertSame([1, 2, 3], $value);
 
                     $listValidatorCalled = true;
@@ -273,10 +338,24 @@ class ResolverTest extends Test
         $this->assertTrue($listValidatorCalled);
     }
 
+    function testShouldValidateOptionWithContext()
+    {
+        $resolver = $this->createResolver(
+            Option::any('option')
+                ->validate(static function ($value, $foo, $bar) {
+                    static::assertSame('value', $value);
+                    static::assertSame('foo', $foo);
+                    static::assertSame(123, $bar);
+                })
+        );
+
+        $this->assertResolveSuccess($resolver, ['option' => 'value'], null, ['foo', 123]);
+    }
+
     function testShouldHandleValidatorErrors()
     {
         $resolver = $this->createResolver(
-            OptionFactory::any('option')
+            Option::any('option')
                 ->validate(static function () {
                     return [
                         new InvalidOptionError('foo'),
@@ -298,15 +377,15 @@ class ResolverTest extends Test
         );
     }
 
-    function testShouldNotCallValidatorWithInvalidValues()
+    function testShouldNotValidateOptionWithInvalidValue()
     {
         $validator = static function () {
             static::fail('Validators should not be called with invalid values');
         };
 
         $resolver = $this->createResolver(
-            OptionFactory::string('string')->validate($validator),
-            OptionFactory::list('stringList', 'string')->validate($validator)
+            Option::string('string')->validate($validator),
+            Option::list('stringList', 'string')->validate($validator)
         );
 
         $this->assertResolveFailure(
@@ -319,51 +398,54 @@ class ResolverTest extends Test
         );
     }
 
-    function testShouldCallNormalizers()
+    function testShouldNormalizeAndValidateListOptions()
     {
+        $validatorCalled = false;
+
         $resolver = $this->createResolver(
-            OptionFactory::string('string')
-                ->normalize(static function (string $value) {
-                    return $value . '.bar';
-                })
-                ->normalize(static function (string $value) {
-                    return $value . '.baz';
+            Option::list('option', null)
+                ->normalize('array_reverse')
+                ->validate(static function (array $value) use (&$validatorCalled) {
+                    static::assertSame(1, func_num_args(), 'Expected a single validator argument');
+                    static::assertSame([3, 2, 1], $value);
+
+                    $validatorCalled = true;
                 })
         );
 
-        $this->assertResolveSuccess($resolver, ['string' => 'foo'], ['string' => 'foo.bar.baz']);
+        $this->assertResolveSuccess($resolver, ['option' => [1, 2, 3]], ['option' => [3, 2, 1]]);
+        $this->assertTrue($validatorCalled);
     }
 
-    function testShouldHandleNormalizerException()
+    function testShouldNormalizeBeforeValidation()
     {
-        $errors = [new InvalidOptionError('foo'), new InvalidOptionError('bar'), new InvalidOptionError('baz')];
-        $exception = new NormalizerException('test exception', $errors);
-        $this->removeExceptionTrace($exception);
+        $normalizerCalled = false;
+        $validatorCalled = false;
 
         $resolver = $this->createResolver(
-            OptionFactory::any('option')
-                ->normalize(static function () use ($exception) {
-                    throw $exception;
+            Option::any('option')
+                ->normalize(static function ($value) use (&$normalizerCalled, &$validatorCalled) {
+                    static::assertFalse($normalizerCalled, 'Normalizers should be called only once');
+                    static::assertFalse($validatorCalled, 'Normalizers should be called before validators');
+                    static::assertSame('value', $value);
+
+                    $normalizerCalled = true;
+
+                    return 'normalized-value';
                 })
-                ->normalize(static function () {
-                    static::fail('Normalization should stop after first exception');
+                ->validate(static function ($value) use (&$normalizerCalled, &$validatorCalled) {
+                    static::assertTrue($normalizerCalled, 'Validators should be called after normalizers');
+                    static::assertFalse($validatorCalled, 'Validators should be called only once');
+                    static::assertSame('normalized-value', $value);
+
+                    $validatorCalled = true;
                 })
         );
 
-        $this->assertResolveFailure($resolver, ['option' => 'value'], $errors);
-    }
+        $this->assertResolveSuccess($resolver, ['option' => 'value'], ['option' => 'normalized-value']);
 
-    function testShouldNotCallNormalizersWithInvalidValues()
-    {
-        $resolver = $this->createResolver(
-            OptionFactory::string('string')->normalize(static function () {
-                self::fail('Normalizers should not be called with invalid values');
-            })
-        );
-
-        $this->expectException(ResolverException::class);
-
-        $resolver->resolve(['string' => 123]);
+        $this->assertTrue($normalizerCalled);
+        $this->assertTrue($validatorCalled);
     }
 
     function testShouldResolveDefaults()
@@ -372,8 +454,8 @@ class ResolverTest extends Test
         $closure = static function () {};
 
         $resolver = $this->createResolver(
-            OptionFactory::any('option')->default('example'),
-            OptionFactory::int('intOption')
+            Option::any('option')->default('example'),
+            Option::int('intOption')
                 ->default('foo')
                 ->normalize(static function () {
                     static::fail('Leaf option default values should not be normalized');
@@ -381,12 +463,12 @@ class ResolverTest extends Test
                 ->validate(static function () {
                     static::fail('Leaf option default values should not be validated');
                 }),
-            OptionFactory::any('lazy')->default(static function (Node $node) use (&$lazyCalled) {
+            Option::any('lazy')->default(static function (Node $node) use (&$lazyCalled) {
                 $lazyCalled = true;
 
                 return "option is {$node['option']}";
             }),
-            OptionFactory::any('closure')->default($closure)
+            Option::any('closure')->default($closure)
         );
 
         $node = $resolver->resolve([]);
@@ -417,6 +499,7 @@ class ResolverTest extends Test
                 $resolver,
                 [$option->name => $validValue],
                 null,
+                [],
                 "expected success valid value \"{$key}\""
             );
         }
@@ -441,7 +524,7 @@ class ResolverTest extends Test
         return [
             // option, validValues, invalidValues, expectedErrorMap
             'scalars' => [
-                OptionFactory::choice('option', 1, 2, 3),
+                Option::choice('option', 1, 2, 3),
                 [1, 2, 3],
                 ['1', 2.1],
                 [
@@ -452,7 +535,7 @@ class ResolverTest extends Test
             ],
 
             'objects' => [
-                OptionFactory::choice('option', $objectA, $objectB, $objectC),
+                Option::choice('option', $objectA, $objectB, $objectC),
                 [$objectA, $objectB, $objectC],
                 [$otherObject, 123, null],
                 [
@@ -463,7 +546,7 @@ class ResolverTest extends Test
             ],
 
             'nullable' => [
-                OptionFactory::choice('option', 'foo', 'bar', 'baz')->nullable(),
+                Option::choice('option', 'foo', 'bar', 'baz')->nullable(),
                 ['foo', 'bar', 'baz', null],
                 ['qux', 123, ''],
                 [
@@ -474,7 +557,7 @@ class ResolverTest extends Test
             ],
 
             'list' => [
-                OptionFactory::choiceList('option', 'a', 'b', 'c'),
+                Option::choiceList('option', 'a', 'b', 'c'),
                 [['a', 'b', 'c', 'a'], ['a'], []],
                 [['a', 'x', 'c', 'z'], [null, 'a']],
                 [
@@ -489,7 +572,7 @@ class ResolverTest extends Test
             ],
 
             'nullable list' => [
-                OptionFactory::choiceList('option', 1, 2, 3)->nullable(),
+                Option::choiceList('option', 1, 2, 3)->nullable(),
                 [[1, 2, 3], [2], [], null],
                 [[1, 2, 3, null], [3, 4, 5]],
                 [
@@ -504,7 +587,7 @@ class ResolverTest extends Test
             ],
 
             'not-empty choice list' => [
-                OptionFactory::choiceList('option', 'x', 'y', 'z')->notEmpty(),
+                Option::choiceList('option', 'x', 'y', 'z')->notEmpty(),
                 [['x', 'y'], ['z']],
                 [[], ['abc']],
                 [
@@ -522,9 +605,9 @@ class ResolverTest extends Test
     function testShouldDetectMissingRequiredOption()
     {
         $resolver = $this->createResolver(
-            OptionFactory::string('foo'),
-            OptionFactory::string('bar'),
-            OptionFactory::string('baz')
+            Option::string('foo'),
+            Option::string('bar'),
+            Option::string('baz')
         );
 
         $this->assertResolveFailure(
@@ -539,7 +622,7 @@ class ResolverTest extends Test
 
     function testShouldDetectUnknownOptions()
     {
-        $resolver = $this->createResolver(OptionFactory::string('foo'));
+        $resolver = $this->createResolver(Option::string('foo'));
 
         $this->assertFalse($resolver->isIgnoringUnknown());
 
@@ -555,7 +638,7 @@ class ResolverTest extends Test
 
     function testShouldIgnoreUnknownOptionsIfEnabled()
     {
-        $resolver = $this->createResolver(OptionFactory::string('foo'));
+        $resolver = $this->createResolver(Option::string('foo'));
         $resolver->setIgnoreUnknown(true);
 
         $this->assertTrue($resolver->isIgnoringUnknown());
@@ -565,23 +648,23 @@ class ResolverTest extends Test
     function testShouldResolveNodeOptions()
     {
         $resolver = $this->createResolver(
-            OptionFactory::string('name'),
-            OptionFactory::int('score')->default(0),
-            OptionFactory::node(
+            Option::string('name'),
+            Option::int('score')->default(0),
+            Option::node(
                 'props',
-                OptionFactory::int('a')->default(0),
-                OptionFactory::int('b')->default(0),
-                OptionFactory::int('c')->default(0)
+                Option::int('a')->default(0),
+                Option::int('b')->default(0),
+                Option::int('c')->default(0)
             ),
-            OptionFactory::nodeList(
+            Option::nodeList(
                 'log',
-                OptionFactory::string('name'),
-                OptionFactory::choice('type', 1, 2, 3),
-                OptionFactory::node(
+                Option::string('name'),
+                Option::choice('type', 1, 2, 3),
+                Option::node(
                     'location',
-                    OptionFactory::int('zone'),
-                    OptionFactory::number('x'),
-                    OptionFactory::number('y')
+                    Option::int('zone'),
+                    Option::number('x'),
+                    Option::number('y')
                 )
             )
         );
@@ -650,10 +733,10 @@ class ResolverTest extends Test
     function testShouldResolveRequiredNodeOption()
     {
         $resolver = $this->createResolver(
-            OptionFactory::node(
+            Option::node(
                 'node',
-                OptionFactory::string('foo')->default('abc'),
-                OptionFactory::int('bar')->default(123)
+                Option::string('foo')->default('abc'),
+                Option::int('bar')->default(123)
             )->required()
         );
 
@@ -681,17 +764,17 @@ class ResolverTest extends Test
         $lazyQuxCalled = false;
 
         $resolver = $this->createResolver(
-            OptionFactory::string('lazyRoot')->default(static function (Node $node) use (&$lazyRootCalled) {
+            Option::string('lazyRoot')->default(static function (Node $node) use (&$lazyRootCalled) {
                 $lazyRootCalled = true;
 
                 return "node baz is {$node['node']['baz']}";
             }),
-            OptionFactory::node(
+            Option::node(
                 'node',
-                OptionFactory::string('foo'),
-                OptionFactory::int('bar'),
-                OptionFactory::int('baz')->default(456),
-                OptionFactory::string('qux')->default(static function (Node $node) use (&$lazyQuxCalled) {
+                Option::string('foo'),
+                Option::int('bar'),
+                Option::int('baz')->default(456),
+                Option::string('qux')->default(static function (Node $node) use (&$lazyQuxCalled) {
                     $lazyQuxCalled = true;
 
                     return "bar is {$node['bar']}";
@@ -700,11 +783,11 @@ class ResolverTest extends Test
                 'foo' => 'default foo',
                 'bar' => 123,
             ]),
-            OptionFactory::nodeList(
+            Option::nodeList(
                 'nodeList',
-                OptionFactory::int('x'),
-                OptionFactory::int('y'),
-                OptionFactory::int('z')->default(0)
+                Option::int('x'),
+                Option::int('y'),
+                Option::int('z')->default(0)
             )->default([
                 ['x' => 0, 'y' => 1],
                 ['x' => 50, 'y' => 100],
@@ -745,13 +828,13 @@ class ResolverTest extends Test
     function testShouldResolveNodeOptionWithNullDefault()
     {
         $resolver = $this->createResolver(
-            OptionFactory::node(
+            Option::node(
                 'node',
-                OptionFactory::string('foo'),
-                OptionFactory::int('bar'),
-                OptionFactory::node(
-                    'another_node',
-                    OptionFactory::string('baz')
+                Option::string('foo'),
+                Option::int('bar'),
+                Option::node(
+                    'innerNode',
+                    Option::string('baz')
                 )
             )->default(null)
         );
@@ -768,10 +851,10 @@ class ResolverTest extends Test
     function testShouldResolveNullableNodeOption()
     {
         $resolver = $this->createResolver(
-            OptionFactory::node(
+            Option::node(
                 'node',
-                OptionFactory::string('foo'),
-                OptionFactory::string('bar')
+                Option::string('foo'),
+                Option::string('bar')
             )->nullable()
         );
 
@@ -784,10 +867,10 @@ class ResolverTest extends Test
     function testShouldResolveOptionalNotNullableNodeOptionWithNullDefault()
     {
         $resolver = $this->createResolver(
-            OptionFactory::node(
+            Option::node(
                 'node',
-                OptionFactory::string('foo'),
-                OptionFactory::string('bar')
+                Option::string('foo'),
+                Option::string('bar')
             )->default(null)->notNullable()
         );
 
@@ -804,15 +887,301 @@ class ResolverTest extends Test
         );
     }
 
-    function testShouldCallNodeOptionValidators()
+    function testShouldNormalizeNodeOptions()
     {
-        $validatorCalled = false;
-        $validator2Called = false;
-        $listValidatorCalled = false;
+        $resolver = $this->createResolver(
+            Option::node(
+                'node',
+                Option::node(
+                    'innerNode',
+                    Option::any('option'),
+                    Option::any('defaultOption')->default('bar')
+                )->normalize(static function (Node $node) {
+                    static::assertSame(1, func_num_args(), 'Expected a single node normalizer argument');
+
+                    $node['option'] .= '.quux';
+                    $node['defaultOption'] .= '.quuz';
+
+                    return $node;
+                }),
+                Option::nodeList(
+                    'nodeList',
+                    Option::any('value')->default('default')
+                )->normalize(static function (array $nodes) {
+                    static::assertSame(1, func_num_args(), 'Expected a single node normalizer argument');
+
+                    return array_map(static function (Node $node) { return (object) $node->toArray(); }, $nodes);
+                })->normalize(static function (array $nodes) {
+                    static::assertSame(1, func_num_args(), 'Expected a single node normalizer argument');
+
+                    return array_map(static function (\stdClass $node) { $node->value .= '.quux'; return $node; }, $nodes);
+                })
+            )->normalize(static function (Node $node) {
+                static::assertSame(1, func_num_args(), 'Expected a single node normalizer argument');
+
+                return $node->toArray();
+            })->normalize(static function (array $node) {
+                static::assertSame(1, func_num_args(), 'Expected a single node normalizer argument');
+
+                return array_change_key_case($node, CASE_UPPER);
+            })
+        );
+
+        $this->assertResolveSuccess(
+            $resolver,
+            [
+                'node' => [
+                    'innerNode' => [
+                        'option' => 'foo',
+                    ],
+                    'nodeList' => [
+                        ['value' => 'foo'],
+                        ['value' => 'bar'],
+                        [],
+                    ],
+                ],
+            ],
+            [
+                'node' => [
+                    'INNERNODE' => [
+                        'option' => 'foo.quux',
+                        'defaultOption' => 'bar.quuz',
+                    ],
+                    'NODELIST' => [
+                        (object) ['value' => 'foo.quux'],
+                        (object) ['value' => 'bar.quux'],
+                        (object) ['value' => 'default.quux'],
+                    ],
+                ],
+            ]
+        );
+    }
+
+    function testShouldNormalizeNodeOptionsWithContext()
+    {
+        $resolver = $this->createResolver(
+            Option::node(
+                'node',
+                Option::node(
+                    'innerNode',
+                    Option::any('option')
+                )->normalize(static function (Node $node, $foo, $bar) {
+                    static::assertSame('foo', $foo);
+                    static::assertSame(123, $bar);
+
+                    return $node;
+                }),
+                Option::nodeList(
+                    'nodeList',
+                    Option::any('value')
+                )->normalize(static function (array $nodes, $foo, $bar) {
+                    static::assertSame('foo', $foo);
+                    static::assertSame(123, $bar);
+
+                    return $nodes;
+                })->normalize(static function (array $nodes, $foo, $bar) {
+                    static::assertSame('foo', $foo);
+                    static::assertSame(123, $bar);
+
+                    return $nodes;
+                })
+            )->normalize(static function (Node $node, $foo, $bar) {
+                static::assertSame('foo', $foo);
+                static::assertSame(123, $bar);
+
+                return $node;
+            })->normalize(static function (Node $node, $foo, $bar) {
+                static::assertSame('foo', $foo);
+                static::assertSame(123, $bar);
+
+                return $node;
+            })
+        );
+
+        $this->assertResolveSuccess(
+            $resolver,
+            [
+                'node' => [
+                    'innerNode' => [
+                        'option' => 'foo',
+                    ],
+                    'nodeList' => [
+                        ['value' => 'foo'],
+                        ['value' => 'bar'],
+                    ],
+                ],
+            ],
+            null,
+            ['foo', 123]
+        );
+    }
+
+    function testShouldHandleNodeOptionNormalizerErrors()
+    {
+        $resolver = $this->createResolver(
+            Option::node(
+                'node',
+                Option::any('option')
+            )->normalize(static function () {
+                throw new NormalizerException('', [new InvalidOptionError('foo')]);
+            }) ->normalize(static function () {
+                static::fail('Node normalization should stop after first failure');
+            })
+        );
+
+        $this->assertResolveFailure(
+            $resolver,
+            [
+                'node' => ['option' => 'value'],
+            ],
+            [
+                (new InvalidOptionError('foo'))->at(['node']),
+            ]
+        );
+    }
+
+    function testShouldHandleNodeListOptionNormalizerErrors()
+    {
+        $resolver = $this->createResolver(
+            Option::nodeList(
+                'nodeList',
+                Option::any('option')
+            )->normalize(static function () {
+                throw new NormalizerException('', [new InvalidOptionError('foo')]);
+            }) ->normalize(static function () {
+                static::fail('Node list normalization should stop after first failure');
+            })
+        );
+
+        $this->assertResolveFailure(
+            $resolver,
+            [
+                'nodeList' => [
+                    ['option' => 'value'],
+                ],
+            ],
+            [
+                (new InvalidOptionError('foo'))->at(['nodeList']),
+            ]
+        );
+    }
+
+    function testShouldStopNormalizingNodeOptionsAfterInnerNodeNormalizerError()
+    {
+        $resolver = $this->createResolver(
+            Option::node(
+                'node',
+                Option::node(
+                    'innerNode',
+                    Option::any('option')
+                )->normalize(static function () {
+                    throw new NormalizerException('', [new InvalidOptionError('foo')]);
+                })
+            )->normalize(static function () {
+                static::fail('Node normalization should stop after inner normalizer error');
+            })
+        );
+
+        $this->assertResolveFailure(
+            $resolver,
+            [
+                'node' => [
+                    'innerNode' => ['option' => 'value'],
+                ],
+            ],
+            [
+                (new InvalidOptionError('foo'))->at(['node', 'innerNode']),
+            ]
+        );
+    }
+
+    function testShouldStopNormalizingNodeOptionsAfterInnerNodeListNormalizerError()
+    {
+        $resolver = $this->createResolver(
+            Option::nodeList(
+                'nodeList',
+                Option::nodeList(
+                    'innerNodeList',
+                    Option::any('option')
+                )->normalize(static function () {
+                    throw new NormalizerException('', [new InvalidOptionError('foo')]);
+                })
+            )->normalize(static function () {
+                static::fail('Node list normalization should stop after inner normalizer error');
+            })
+        );
+
+        $this->assertResolveFailure(
+            $resolver,
+            [
+                'nodeList' => [
+                    ['innerNodeList' => [['option' => 'value']]],
+                ],
+            ],
+            [
+                (new InvalidOptionError('foo'))->at(['nodeList', 0, 'innerNodeList']),
+            ]
+        );
+    }
+
+    function testShouldNotNormalizeNodeOptionsIfThereAreAnyErrors()
+    {
+        $normalizer = static function () {
+            static::fail('Node normalizers should not be called if there are errors');
+        };
+
+        $resolver = $this->createResolver(
+            Option::node(
+                'node',
+                Option::node(
+                    'innerNode',
+                    Option::string('string')
+                )->normalize($normalizer),
+                Option::nodeList(
+                    'nodeList',
+                    Option::string('string')
+                )->normalize($normalizer)
+            )
+        );
+
+        $this->assertResolveFailure(
+            $resolver,
+            [
+                'node' => [
+                    'innerNode' => [
+                        'string' => 123,
+                    ],
+                    'nodeList' => [
+                        ['string' => 'foo'],
+                        ['string' => 456],
+                    ],
+                ],
+            ],
+            [
+                (new InvalidTypeError('string', false, 123))->at(['node', 'innerNode', 'string']),
+                (new InvalidTypeError('string', false, 456))->at(['node', 'nodeList', 1, 'string']),
+            ]
+        );
+    }
+
+    function testShouldValidateNodeOptions()
+    {
+        /** @var bool[] $validatorCallStatus */
+        $validatorCallStatus = [
+            'node' => false,
+            'node2' => false,
+            'innerNode' => false,
+            'innerNode2' => false,
+            'list' => false,
+            'list2' => false,
+        ];
 
         $expectedResolvedArray = [
             'node' => [
-                'anotherNode' => ['option' => 'foo', 'defaultOption' => 'bar'],
+                'innerNode' => [
+                    'option' => 'foo',
+                    'defaultOption' => 'bar',
+                ],
                 'nodeList' => [
                     ['value' => 1],
                     ['value' => 2],
@@ -822,32 +1191,77 @@ class ResolverTest extends Test
         ];
 
         $resolver = $this->createResolver(
-            OptionFactory::node(
+            Option::node(
                 'node',
-                OptionFactory::node(
-                    'anotherNode',
-                    OptionFactory::any('option'),
-                    OptionFactory::any('defaultOption')->default('bar')
-                ),
-                OptionFactory::nodeList(
+                Option::node(
+                    'innerNode',
+                    Option::any('option'),
+                    Option::any('defaultOption')->default('bar')
+                )->validate(static function (Node $node) use (&$validatorCallStatus, $expectedResolvedArray) {
+                    static::assertSame(1, func_num_args(), 'Expected a single node validator argument');
+                    static::assertFalse($validatorCallStatus['node'], 'Nested node validators should be called before outer node validators');
+                    static::assertFalse($validatorCallStatus['node2'], 'Nested node validators should be called before outer node validators');
+                    static::assertFalse($validatorCallStatus['innerNode'], 'Each inner validator should be called only once');
+                    static::assertFalse($validatorCallStatus['innerNode2'], 'Expected first inner validator to be called first');
+                    static::assertSame($expectedResolvedArray['node']['innerNode'], $node->toArray());
+
+                    $validatorCallStatus['innerNode'] = true;
+                })->validate(static function (Node $node) use (&$validatorCallStatus, $expectedResolvedArray) {
+                    static::assertSame(1, func_num_args(), 'Expected a single node validator argument');
+                    static::assertFalse($validatorCallStatus['node'], 'Nested node validators should be called before outer node validators');
+                    static::assertFalse($validatorCallStatus['node2'], 'Nested node validators should be called before outer node validators');
+                    static::assertTrue($validatorCallStatus['innerNode'], 'Expected second inner validator to be called after the first');
+                    static::assertFalse($validatorCallStatus['innerNode2'], 'Each inner validator should be called only once');
+                    static::assertSame($expectedResolvedArray['node']['innerNode'], $node->toArray());
+
+                    $validatorCallStatus['innerNode2'] = true;
+                }),
+                Option::nodeList(
                     'nodeList',
-                    OptionFactory::any('value')->default('default')
-                )->validate(static function (array $nodes) use (&$listValidatorCalled, $expectedResolvedArray) {
+                    Option::any('value')->default('default')
+                )->validate(static function (array $nodes) use (&$validatorCallStatus, $expectedResolvedArray) {
+                    static::assertSame(1, func_num_args(), 'Expected a single node list validator argument');
+                    static::assertFalse($validatorCallStatus['node'], 'Nested node list validators should be called before outer node validators');
+                    static::assertFalse($validatorCallStatus['node2'], 'Nested node list validators should be called before outer node validators');
+                    static::assertFalse($validatorCallStatus['list'], 'Each list validator should be called only once');
+                    static::assertFalse($validatorCallStatus['list2'], 'Expected first list validator to be called first');
                     static::assertContainsOnlyInstancesOf(Node::class, $nodes);
                     static::assertSame($expectedResolvedArray['node']['nodeList'][0], $nodes[0]->toArray());
                     static::assertSame($expectedResolvedArray['node']['nodeList'][1], $nodes[1]->toArray());
                     static::assertSame($expectedResolvedArray['node']['nodeList'][2], $nodes[2]->toArray());
 
-                    $listValidatorCalled = true;
+                    $validatorCallStatus['list'] = true;
+                })->validate(static function (array $nodes) use (&$validatorCallStatus, $expectedResolvedArray) {
+                    static::assertSame(1, func_num_args(), 'Expected a single node list validator argument');
+                    static::assertFalse($validatorCallStatus['node'], 'Nested node list validators should be called before outer node validators');
+                    static::assertFalse($validatorCallStatus['node2'], 'Nested node list validators should be called before outer node validators');
+                    static::assertTrue($validatorCallStatus['list'], 'Expected second list validator to be called after the first');
+                    static::assertFalse($validatorCallStatus['list2'], 'Each list validator should be called only once');
+                    static::assertContainsOnlyInstancesOf(Node::class, $nodes);
+                    static::assertSame($expectedResolvedArray['node']['nodeList'][0], $nodes[0]->toArray());
+                    static::assertSame($expectedResolvedArray['node']['nodeList'][1], $nodes[1]->toArray());
+                    static::assertSame($expectedResolvedArray['node']['nodeList'][2], $nodes[2]->toArray());
+
+                    $validatorCallStatus['list2'] = true;
                 })
-            )->validate(static function (Node $node) use (&$validatorCalled, $expectedResolvedArray) {
+            )->validate(static function (Node $node) use (&$validatorCallStatus, $expectedResolvedArray) {
+                static::assertSame(1, func_num_args(), 'Expected a single node validator argument');
+                static::assertTrue($validatorCallStatus['list'], 'Node validators should be called after inner node validators');
+                static::assertTrue($validatorCallStatus['list2'], 'Node validators should be called after inner node validators');
+                static::assertFalse($validatorCallStatus['node'], 'Each validator should be called only once');
+                static::assertFalse($validatorCallStatus['node2'], 'Expected first validator to be called first');
                 static::assertSame($expectedResolvedArray['node'], $node->toArray());
 
-                $validatorCalled = true;
-            })->validate(static function (Node $node) use (&$validator2Called, $expectedResolvedArray) {
+                $validatorCallStatus['node'] = true;
+            })->validate(static function (Node $node) use (&$validatorCallStatus, $expectedResolvedArray) {
+                static::assertSame(1, func_num_args(), 'Expected a single node validator argument');
+                static::assertTrue($validatorCallStatus['list'], 'Node validators should be called after inner node validators');
+                static::assertTrue($validatorCallStatus['list2'], 'Node validators should be called after inner node validators');
+                static::assertTrue($validatorCallStatus['node'], 'Expected second validator to be called after the first');
+                static::assertFalse($validatorCallStatus['node2'], 'Each validator should be called only once');
                 static::assertSame($expectedResolvedArray['node'], $node->toArray());
 
-                $validator2Called = true;
+                $validatorCallStatus['node2'] = true;
             })
         );
 
@@ -855,7 +1269,9 @@ class ResolverTest extends Test
             $resolver,
             [
                 'node' => [
-                    'anotherNode' => ['option' => 'foo'],
+                    'innerNode' => [
+                        'option' => 'foo',
+                    ],
                     'nodeList' => [
                         ['value' => 1],
                         ['value' => 2],
@@ -866,19 +1282,69 @@ class ResolverTest extends Test
             $expectedResolvedArray
         );
 
-        $this->assertTrue($validatorCalled);
-        $this->assertTrue($validator2Called);
-        $this->assertTrue($listValidatorCalled);
+        $this->assertSame(
+            ['node' => true, 'node2' => true, 'innerNode' => true, 'innerNode2' => true, 'list' => true, 'list2' => true],
+            $validatorCallStatus
+        );
+    }
+
+    function testShouldValidateNodeOptionsWithContext()
+    {
+        $resolver = $this->createResolver(
+            Option::node(
+                'node',
+                Option::node(
+                    'innerNode',
+                    Option::any('option')
+                )->validate(static function (Node $node, $foo, $bar) {
+                    static::assertSame('foo', $foo);
+                    static::assertSame(123, $bar);
+                }),
+                Option::nodeList(
+                    'nodeList',
+                    Option::any('value')
+                )->validate(static function (array $nodes, $foo, $bar) {
+                    static::assertSame('foo', $foo);
+                    static::assertSame(123, $bar);
+                })->validate(static function (array $nodes, $foo, $bar) {
+                    static::assertSame('foo', $foo);
+                    static::assertSame(123, $bar);
+                })
+            )->validate(static function (Node $node, $foo, $bar) {
+                static::assertSame('foo', $foo);
+                static::assertSame(123, $bar);
+            })->validate(static function (Node $node, $foo, $bar) {
+                static::assertSame('foo', $foo);
+                static::assertSame(123, $bar);
+            })
+        );
+
+        $this->assertResolveSuccess(
+            $resolver,
+            [
+                'node' => [
+                    'innerNode' => [
+                        'option' => 'foo',
+                    ],
+                    'nodeList' => [
+                        ['value' => 'foo'],
+                        ['value' => 'bar'],
+                    ],
+                ],
+            ],
+            null,
+            ['foo', 123]
+        );
     }
 
     function testShouldHandleNodeOptionValidatorErrors()
     {
         $resolver = $this->createResolver(
-            OptionFactory::node(
+            Option::node(
                 'node',
-                OptionFactory::node(
-                    'anotherNode',
-                    OptionFactory::any('option')
+                Option::node(
+                    'innerNode',
+                    Option::any('option')
                 )->validate(static function () {
                     return [
                         new InvalidOptionError('foo'),
@@ -887,9 +1353,9 @@ class ResolverTest extends Test
                 })->validate(static function () {
                     static::fail('Node validation should stop after first failure');
                 }),
-                OptionFactory::nodeList(
+                Option::nodeList(
                     'nodeList',
-                    OptionFactory::any('anotherOption')
+                    Option::any('anotherOption')
                 )->validate(static function () {
                     return [
                         new InvalidOptionError('baz'),
@@ -905,37 +1371,39 @@ class ResolverTest extends Test
             $resolver,
             [
                 'node' => [
-                    'anotherNode' => ['option' => 'value'],
+                    'innerNode' => [
+                        'option' => 'value',
+                    ],
                     'nodeList' => [
                         ['anotherOption' => 'anotherValue'],
                     ],
                 ],
             ],
             [
-                (new InvalidOptionError('foo'))->at(['node', 'anotherNode']),
-                (new InvalidOptionError('bar'))->at(['node', 'anotherNode']),
+                (new InvalidOptionError('foo'))->at(['node', 'innerNode']),
+                (new InvalidOptionError('bar'))->at(['node', 'innerNode']),
                 (new InvalidOptionError('baz'))->at(['node', 'nodeList']),
                 (new InvalidOptionError('qux'))->at(['node', 'nodeList']),
             ]
         );
     }
 
-    function testShouldNotCallNodeOptionValidatorsIfThereAreAnyErrors()
+    function testShouldValidateNodeOptionsIfThereAreAnyErrors()
     {
         $validator = static function () {
             static::fail('Node validators should not be called if there are errors');
         };
 
         $resolver = $this->createResolver(
-            OptionFactory::node(
+            Option::node(
                 'node',
-                OptionFactory::node(
-                    'anotherNode',
-                    OptionFactory::string('string')
+                Option::node(
+                    'innerNode',
+                    Option::string('string')
                 )->validate($validator),
-                OptionFactory::nodeList(
+                Option::nodeList(
                     'nodeList',
-                    OptionFactory::string('string')
+                    Option::string('string')
                 )->validate($validator)
             )
         );
@@ -944,7 +1412,9 @@ class ResolverTest extends Test
             $resolver,
             [
                 'node' => [
-                    'anotherNode' => ['string' => 123],
+                    'innerNode' => [
+                        'string' => 123,
+                    ],
                     'nodeList' => [
                         ['string' => 'foo'],
                         ['string' => 456],
@@ -952,8 +1422,111 @@ class ResolverTest extends Test
                 ],
             ],
             [
-                (new InvalidTypeError('string', false, 123))->at(['node', 'anotherNode', 'string']),
+                (new InvalidTypeError('string', false, 123))->at(['node', 'innerNode', 'string']),
                 (new InvalidTypeError('string', false, 456))->at(['node', 'nodeList', 1, 'string']),
+            ]
+        );
+    }
+
+    function testShouldNormalizeNodeOptionsBeforeValidation()
+    {
+        /** @var bool[] $callStatus */
+        $callStatus = [
+            'nodeNorm' => false,
+            'nodeValid' => false,
+            'nodeListNorm' => false,
+            'nodeListValid' => false,
+        ];
+
+        $resolver = $this->createResolver(
+            Option::node(
+                'node',
+                Option::any('option')
+            )->normalize(static function ($value) use (&$callStatus) {
+                static::assertFalse($callStatus['nodeValid'], 'Node normalizers should be called before validators');
+
+                $callStatus['nodeNorm'] = true;
+
+                return $value;
+            })->validate(static function () use (&$callStatus) {
+                static::assertTrue($callStatus['nodeNorm'], 'Node validators should be called after normalizers');
+
+                $callStatus['nodeValid'] = true;
+            }),
+            Option::nodeList(
+                'nodeList',
+                Option::any('anotherOption')
+            )->normalize(static function ($value) use (&$callStatus) {
+                static::assertFalse($callStatus['nodeListValid'], 'Node normalizers should be called before validators');
+
+                $callStatus['nodeListNorm'] = true;
+
+                return $value;
+            })->validate(static function () use (&$callStatus) {
+                static::assertTrue($callStatus['nodeListNorm'], 'Node validators should be called after normalizers');
+
+                $callStatus['nodeListValid'] = true;
+            })
+        );
+
+        $this->assertResolveSuccess(
+            $resolver,
+            [
+                'node' => [
+                    'option' => 'value',
+                ],
+                'nodeList' => [
+                    ['anotherOption' => 'value'],
+                ],
+            ]
+        );
+
+        $this->assertSame(
+            ['nodeNorm' => true, 'nodeValid' => true, 'nodeListNorm' => true, 'nodeListValid' => true],
+            $callStatus
+        );
+    }
+
+    function testShouldNotValidateNodeOptionsIfThereAreNormalizationErrors()
+    {
+        $resolver = $this->createResolver(
+            Option::node(
+                'node',
+                Option::any('option')
+            )->normalize(static function () {
+                throw new NormalizerException('', [new InvalidOptionError('foo')]);
+            })->validate(static function () {
+                static::fail('Validators should not be called if there are normalization errors');
+            })
+        );
+
+        $this->assertResolveFailure(
+            $resolver,
+            ['node' => ['option' => 'value']],
+            [
+                (new InvalidOptionError('foo'))->at(['node']),
+            ]
+        );
+    }
+
+    function testShouldNotValidateNodeListOptionsIfThereAreNormalizationErrors()
+    {
+        $resolver = $this->createResolver(
+            Option::nodeList(
+                'nodeList',
+                Option::any('option')
+            )->normalize(static function () {
+                throw new NormalizerException('', [new InvalidOptionError('foo')]);
+            })->validate(static function () {
+                static::fail('Validators should not be called if there are normalization errors');
+            })
+        );
+
+        $this->assertResolveFailure(
+            $resolver,
+            ['nodeList' => [['option' => 'value']]],
+            [
+                (new InvalidOptionError('foo'))->at(['nodeList']),
             ]
         );
     }
@@ -964,23 +1537,23 @@ class ResolverTest extends Test
         $this->removeExceptionTrace($normalizerException);
 
         $resolver = $this->createResolver(
-            OptionFactory::node(
+            Option::node(
                 'node',
-                OptionFactory::nodeList(
+                Option::nodeList(
                     'nodeList',
-                    OptionFactory::any('normalized')->normalize(static function () use ($normalizerException) {
+                    Option::any('normalized')->normalize(static function () use ($normalizerException) {
                         throw $normalizerException;
                     }),
-                    OptionFactory::any('required'),
-                    OptionFactory::number('number'),
-                    OptionFactory::any('notEmpty')->notEmpty(),
-                    OptionFactory::choice('choice', 1, 2, 3),
-                    OptionFactory::list('intList', 'int'),
-                    OptionFactory::choiceList('choiceList', 4, 5, 6, 7),
-                    OptionFactory::list('list', null)->notEmpty()
+                    Option::any('required'),
+                    Option::number('number'),
+                    Option::any('notEmpty')->notEmpty(),
+                    Option::choice('choice', 1, 2, 3),
+                    Option::list('intList', 'int'),
+                    Option::choiceList('choiceList', 4, 5, 6, 7),
+                    Option::list('list', null)->notEmpty()
                 ),
-                OptionFactory::nodeList('nodeList2'),
-                OptionFactory::nodeList('notEmptyNodeList', OptionFactory::any('dummy'))->notEmpty()
+                Option::nodeList('nodeList2'),
+                Option::nodeList('notEmptyNodeList', Option::any('dummy'))->notEmpty()
             )
         );
 
@@ -1019,6 +1592,187 @@ class ResolverTest extends Test
                 (new InvalidTypeError('array', false, 'not_an_array2'))->at(['node', 'nodeList2']),
                 (new EmptyValueError(false, []))->at(['node', 'notEmptyNodeList']),
             ]
+        );
+    }
+
+    function testShouldNormalizeAndValidateRoot()
+    {
+        $normalizerCalled = false;
+        $validatorCalled = false;
+
+        $resolver = $this->createResolver(
+            Option::any('option'),
+            Option::any('anotherOption')->default('default')
+        );
+
+        $resolver->addNormalizer(static function (Node $node) use (&$normalizerCalled) {
+            $node['extraOption'] = 123;
+            $normalizerCalled = true;
+
+            return $node;
+        });
+
+        $resolver->addValidator(static function (Node $node) use (&$validatorCalled) {
+            static::assertSame(123, $node['extraOption']);
+
+            $validatorCalled = true;
+        });
+
+        $this->assertResolveSuccess(
+            $resolver,
+            ['option' => 'value'],
+            [
+                'option' => 'value',
+                'anotherOption' => 'default',
+                'extraOption' => 123,
+            ]
+        );
+
+        $this->assertTrue($normalizerCalled);
+        $this->assertTrue($validatorCalled);
+    }
+
+    function testShouldHandleRootNormalizationErrors()
+    {
+        $resolver = $this->createResolver(
+            Option::any('option')
+        );
+
+        $resolver->addNormalizer(static function (Node $node) {
+            throw new NormalizerException('', [new InvalidOptionError('foo')]);
+        });
+
+        $resolver->addValidator(static function () {
+            static::fail('Validators should not be called if there are normalization errors');
+        });
+
+        $this->assertResolveFailure(
+            $resolver,
+            ['option' => 'value'],
+            [new InvalidOptionError('foo')]
+        );
+    }
+
+    function testShouldHandleRootValidationErrors()
+    {
+        $resolver = $this->createResolver(
+            Option::any('option')
+        );
+
+        $resolver->addValidator(static function () {
+            return [new InvalidOptionError('foo')];
+        });
+
+        $this->assertResolveFailure(
+            $resolver,
+            ['option' => 'value'],
+            [new InvalidOptionError('foo')]
+        );
+    }
+
+    function testShouldHandleNodeReplacementViaNormalizers()
+    {
+        $resolver = $this->createResolver(
+            Option::node(
+                'node',
+                Option::any('foo'),
+                Option::node(
+                    'innerNode',
+                    Option::any('bar')
+                )->normalize(static function (Node $node) {
+                    static::assertSame('bar-value', $node['bar']);
+
+                    return (object) $node->toArray();
+                })->validate(static function (\stdClass $node) {
+                    static::assertSame('bar-value', $node->bar);
+                }),
+                Option::nodeList(
+                    'innerNodeList',
+                    Option::any('baz')
+                )->normalize(static function (array $nodeList) {
+                    static::assertContainsOnlyInstancesOf(Node::class, $nodeList);
+                    static::assertSame('baz-value-1', $nodeList[0]['baz']);
+                    static::assertSame('baz-value-2', $nodeList[1]['baz']);
+
+                    return new \ArrayObject(array_map(
+                        static function (Node $item) { return (object) $item->toArray(); },
+                        $nodeList
+                    ));
+                })->validate(static function (\ArrayObject $nodeList) {
+                    static::assertSame('baz-value-1', $nodeList[0]->baz);
+                    static::assertSame('baz-value-2', $nodeList[1]->baz);
+                })
+            )->normalize(static function (Node $node) {
+                static::assertSame('foo-value', $node['foo']);
+                static::assertInstanceOf(\stdClass::class, $node['innerNode']);
+                static::assertInstanceOf(\ArrayObject::class, $node['innerNodeList']);
+
+                return (object) $node->toArray();
+            })->validate(static function (\stdClass $node) {
+                static::assertSame('foo-value', $node->foo);
+            }),
+            Option::nodeList(
+                'nodeList',
+                Option::any('qux')
+            )->normalize(static function (array $nodeList) {
+                static::assertContainsOnlyInstancesOf(Node::class, $nodeList);
+                static::assertSame('qux-value-1', $nodeList[0]['qux']);
+                static::assertSame('qux-value-2', $nodeList[1]['qux']);
+
+                return new \ArrayObject(array_map(
+                    static function (Node $item) { return (object) $item->toArray(); },
+                    $nodeList
+                ));
+            })->validate(static function (\ArrayObject $nodeList) {
+                static::assertSame('qux-value-1', $nodeList[0]->qux);
+                static::assertSame('qux-value-2', $nodeList[1]->qux);
+            })
+        );
+
+        $resolver->addNormalizer(static function (Node $node) {
+            return (object) $node->toArray();
+        });
+
+        $resolver->addValidator(static function (\stdClass $node) {
+            static::assertObjectHasAttribute('node', $node);
+            static::assertObjectHasAttribute('nodeList', $node);
+            static::assertInstanceOf(\stdClass::class, $node->node);
+            static::assertInstanceOf(\ArrayObject::class, $node->nodeList);
+        });
+
+        $this->assertLooselyIdentical(
+            (object) [
+                'node' => (object) [
+                    'foo' => 'foo-value',
+                    'innerNode' => (object) [
+                        'bar' => 'bar-value',
+                    ],
+                    'innerNodeList' => new \ArrayObject([
+                        (object) ['baz' => 'baz-value-1'],
+                        (object) ['baz' => 'baz-value-2'],
+                    ]),
+                ],
+                'nodeList' => new \ArrayObject([
+                    (object) ['qux' => 'qux-value-1'],
+                    (object) ['qux' => 'qux-value-2'],
+                ]),
+            ],
+            $resolver->resolve([
+                'node' => [
+                    'foo' => 'foo-value',
+                    'innerNode' => [
+                        'bar' => 'bar-value',
+                    ],
+                    'innerNodeList' => [
+                        ['baz' => 'baz-value-1'],
+                        ['baz' => 'baz-value-2'],
+                    ],
+                ],
+                'nodeList' => [
+                    ['qux' => 'qux-value-1'],
+                    ['qux' => 'qux-value-2'],
+                ],
+            ])
         );
     }
 
@@ -1182,7 +1936,7 @@ class ResolverTest extends Test
         ];
     }
 
-    private function createResolver(Option ...$options): Resolver
+    private function createResolver(OptionDefinition ...$options): Resolver
     {
         $resolver = new Resolver();
         $resolver->addOption(...$options);
@@ -1190,13 +1944,18 @@ class ResolverTest extends Test
         return $resolver;
     }
 
-    private function assertResolveSuccess(Resolver $resolver, array $data, ?array $expectedResult = null, string $message = '')
-    {
+    private function assertResolveSuccess(
+        Resolver $resolver,
+        array $data,
+        ?array $expectedResult = null,
+        array $context = [],
+        string $message = ''
+    ) {
         try {
-            $node = $resolver->resolve($data);
+            $node = $resolver->resolve($data, $context);
 
             $this->assertSame([], $node->getPath());
-            $this->assertSame($expectedResult ?? $data, $node->toArray(), $message);
+            $this->assertLooselyIdentical($expectedResult ?? $data, $node->toArray(), false, $message);
         } catch (ResolverException $e) {
             $this->fail(sprintf("ResolveException was thrown%s\n\n%s", ($message !== '' ? " - {$message}" : ''), $e->getMessage()));
         }

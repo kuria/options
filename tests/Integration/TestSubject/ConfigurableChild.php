@@ -3,7 +3,7 @@
 namespace Kuria\Options\Integration\TestSubject;
 
 use Kuria\Options\Resolver;
-use Kuria\Options\OptionFactory;
+use Kuria\Options\Option;
 
 /**
  * @internal
@@ -17,7 +17,7 @@ class ConfigurableChild extends Configurable
         parent::defineOptions($resolver);
 
         $resolver->addOption(
-            OptionFactory::int('level')->default(1)
+            Option::int('level')->default(1)
         );
     }
 }

@@ -4,7 +4,7 @@ namespace Kuria\Options\Option;
 
 class NodeOptionTest extends OptionTest
 {
-    protected function createOption(string $name): Option
+    protected function createOption(string $name): OptionDefinition
     {
         return new NodeOption($name, []);
     }

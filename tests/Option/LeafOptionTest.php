@@ -6,7 +6,7 @@ use Kuria\Options\Node;
 
 class LeafOptionTest extends OptionTest
 {
-    protected function createOption(string $name): Option
+    protected function createOption(string $name): OptionDefinition
     {
         return new LeafOption($name);
     }
@@ -28,9 +28,6 @@ class LeafOptionTest extends OptionTest
     function provideFluentMethodCalls()
     {
         $cases = parent::provideFluentMethodCalls();
-
-        $callbackA = static function () {};
-        $callbackB = static function () {};
 
         $cases += [
             // methodCalls, expectedFinalProps
@@ -98,25 +95,6 @@ class LeafOptionTest extends OptionTest
                     'required' => false,
                     'nullable' => true,
                     'default' => 'value',
-                ],
-            ],
-
-            'normalize' => [
-                [
-                    ['normalize', $callbackA],
-                ],
-                [
-                    'normalizers' => [$callbackA],
-                ],
-            ],
-
-            'multiple normalizers' => [
-                [
-                    ['normalize', $callbackA],
-                    ['normalize', $callbackB],
-                ],
-                [
-                    'normalizers' => [$callbackA, $callbackB],
                 ],
             ],
         ];

@@ -3,13 +3,15 @@
 namespace Kuria\Options;
 
 use Kuria\Options\Error\EmptyValueError;
+use Kuria\Options\Error\Error;
 use Kuria\Options\Error\InvalidChoiceError;
+use Kuria\Options\Error\InvalidOptionError;
 use Kuria\Options\Error\InvalidTypeError;
 use Kuria\Options\Error\MissingOptionError;
 use Kuria\Options\Error\UnknownOptionError;
 use Kuria\Options\Exception\NormalizerException;
 use Kuria\Options\Exception\ResolverException;
-use Kuria\Options\Option\Option;
+use Kuria\Options\Option\OptionDefinition;
 use Kuria\Options\Option\LeafOption;
 use Kuria\Options\Option\NodeOption;
 
@@ -31,18 +33,28 @@ class Resolver
         'callable' => 'is_callable',
     ];
 
-    /** @var Option[] name-indexed */
-    private $options = [];
+    private const NODE_OP_NORMALIZE = 0;
+    private const NODE_OP_NORMALIZE_LIST = 1;
+    private const NODE_OP_VALIDATE = 2;
+    private const NODE_OP_VALIDATE_LIST = 3;
 
     /** @var bool */
     private $ignoreUnknown = false;
+
+    /** @var NodeOption */
+    private $root;
+
+    function __construct()
+    {
+        $this->root = new NodeOption('root', []);
+    }
 
     /**
      * See if an option exists
      */
     function hasOption(string $optionName): bool
     {
-        return isset($this->options[$optionName]);
+        return isset($this->root->children[$optionName]);
     }
 
     /**
@@ -50,45 +62,49 @@ class Resolver
      *
      * Returns NULL if there is no such option.
      */
-    function getOption(string $optionName): ?Option
+    function getOption(string $optionName): ?OptionDefinition
     {
-        return $this->options[$optionName] ?? null;
+        return $this->root->children[$optionName] ?? null;
     }
 
     /**
      * Get all options
      *
-     * @return Option[]
+     * @return OptionDefinition[] name-indexed
      */
     function getOptions(): array
     {
-        return $this->options;
+        return $this->root->children;
     }
 
     /**
      * Add one or more options
      */
-    function addOption(Option ...$options): void
+    function addOption(OptionDefinition ...$options): void
     {
         foreach ($options as $option) {
-            $this->options[$option->name] = $option;
+            $this->root->children[$option->name] = $option;
         }
     }
 
     /**
-     * Remove an option
+     * Append a root normalizer
+     *
+     * @see OptionDefinition::normalize()
      */
-    function removeOption(string $optionName): void
+    function addNormalizer(callable $normalizer): void
     {
-        unset($this->options[$optionName]);
+        $this->root->normalizers[] = $normalizer;
     }
 
     /**
-     * Remove all options
+     * Append a root validator
+     *
+     * @see OptionDefinition::validate()
      */
-    function clearOptions(): void
+    function addValidator(callable $validator): void
     {
-        $this->options = [];
+        $this->root->validators[] = $validator;
     }
 
     /**
@@ -110,17 +126,23 @@ class Resolver
     /**
      * Resolve the given data
      *
+     * Returns a Node instance by default. This can be changed by normalizers.
+     *
+     * @see Resolver::addNormalizer()
+     *
+     * @param array $data the array to resolve
+     * @param array $context list of additional arguments to pass to validators and normalizers
      * @throws ResolverException on failure
+     * @return Node|mixed
      */
-    function resolve($data): Node
+    function resolve($data, array $context = [])
     {
         $errors = [];
 
         /** @var ResolverNode[] $queue */
-        $queue = [new ResolverNode(new NodeOption('root', $this->options), [], $data, $errors)];
+        $queue = [new ResolverNode($this->root, [], $data, $errors)];
         $last = 0;
-        $nodeValidations = [];
-        $nodeListValidations = [];
+        $nodeOpsLifoQueue = []; // last in, first out
 
         while ($last >= 0) {
             // pop a resolver node off the queue
@@ -134,6 +156,17 @@ class Resolver
                 continue;
             }
 
+            // queue node normalizers and validators
+            if (!$node->isListItem) {
+                if ($node->option->validators) {
+                    $nodeOpsLifoQueue[] = [self::NODE_OP_VALIDATE, $node, $node->option->validators];
+                }
+
+                if ($node->option->normalizers) {
+                    $nodeOpsLifoQueue[] = [self::NODE_OP_NORMALIZE, $node, $node->option->normalizers];
+                }
+            }
+
             // resolve children
             $lazyOptions = [];
 
@@ -141,16 +174,15 @@ class Resolver
                 if (key_exists($option->name, $node->ref)) {
                     // handle value
                     if ($option instanceof LeafOption) {
-                        if (
-                            !$this->validateLeafOptionValue($node, $option)
-                            || !$this->normalizeLeafOptionValue($node, $option)
-                        ) {
+                        if (!$this->resolveLeafOptionValue($node, $option, $context)) {
                             continue;
                         }
                     } elseif ($option instanceof NodeOption) {
-                        if (!$this->validateNodeOptionValue($node, $option)) {
+                        if (!$this->resolveNodeOptionValue($node, $option)) {
                             continue;
                         }
+                    } else {
+                        throw new \LogicException('Unexpected option type'); // @codeCoverageIgnore
                     }
                 } elseif ($option->required) {
                     // missing required option
@@ -169,9 +201,13 @@ class Resolver
                 // queue child nodes
                 if ($option instanceof NodeOption && isset($node->ref[$option->name])) {
                     if ($option->list) {
-                        // queue node list validators
+                        // queue node list normalizers and validators
                         if ($option->validators) {
-                            $nodeListValidations[] = [$node, $option->name, $option->validators];
+                            $nodeOpsLifoQueue[] = [self::NODE_OP_VALIDATE_LIST, $node, $option->name, $option->validators];
+                        }
+
+                        if ($option->normalizers) {
+                            $nodeOpsLifoQueue[] = [self::NODE_OP_NORMALIZE_LIST, $node, $option->name, $option->normalizers];
                         }
 
                         foreach ($node->ref[$option->name] as $listKey => &$listItem) {
@@ -200,80 +236,81 @@ class Resolver
                     $node->addError(new UnknownOptionError(), $unknownKey);
                 }
             }
-
-            // queue node validators
-            if (!$node->isListItem && $node->option->validators) {
-                $nodeValidations[] = [$node, $node->option->validators];
-            }
-
             // replace resolver node reference with a node
             $node->ref = new Node($node->path, $node->ref, $lazyOptions);
         }
 
-        // run node validations if there are no errors
-        if (empty($errors)) {
-            foreach ($nodeValidations as $validation) {
-                foreach ($validation[1] as $validator) {
-                    if ($validatorErrors = $validator($validation[0]->ref)) {
-                        $validation[0]->addErrors($validatorErrors);
-                        break;
-                    }
-                }
-            }
-
-            foreach ($nodeListValidations as $validation) {
-                foreach ($validation[2] as $validator) {
-                    if ($validatorErrors = $validator($validation[0]->ref[$validation[1]])) {
-                        $validation[0]->addErrors($validatorErrors, $validation[1]);
-                        break;
-                    }
-                }
-            }
+        // run pending node operations if there are no errors
+        if (!$errors) {
+            $this->finalizeNodes($nodeOpsLifoQueue, $context);
         }
 
         if ($errors) {
             throw new ResolverException($errors);
         }
 
-        // at this point, the $data variable has been replaced with a node
-        /** @var Node $data */
+        // at this point, the $data variable has been replaced with a node (or a normalized value)
 
         return $data;
     }
 
-    private function validateNodeOptionValue(ResolverNode $node, NodeOption $option): bool
+    private function finalizeNodes(array &$nodeOpsLifoQueue, array $context): void
     {
-        $value = $node->ref[$option->name];
+        while ($op = array_pop($nodeOpsLifoQueue)) {
+            switch ($op[0]) {
+                case self::NODE_OP_NORMALIZE:
+                    // opt: 1 => node, 2 => normalizers
+                    try {
+                        foreach ($op[2] as $normalizer) {
+                            $op[1]->ref = $normalizer($op[1]->ref, ...$context);
+                        }
+                    } catch (NormalizerException $e) {
+                        $op[1]->addErrors($e->getErrors());
 
-        // null check
-        if ($value === null) {
-            if ($option->nullable) {
-                return true;
-            } else {
-                $node->addError(new InvalidTypeError('array', false, null), $option->name);
+                        return;
+                    }
+                    break;
 
-                return false;
+                case self::NODE_OP_NORMALIZE_LIST:
+                    // opt: 1 => node, 2 => optionName, 3 => normalizers
+                    try {
+                        foreach ($op[3] as $normalizer) {
+                            $op[1]->ref[$op[2]] = $normalizer($op[1]->ref[$op[2]], ...$context);
+                        }
+                    } catch (NormalizerException $e) {
+                        $op[1]->addErrors($e->getErrors(), $op[2]);
+
+                        return;
+                    }
+                    break;
+
+                case self::NODE_OP_VALIDATE:
+                    // opt: 1 => node, 2 => validators
+                    foreach ($op[2] as $validator) {
+                        if ($validatorErrors = $validator($op[1]->ref, ...$context)) {
+                            $op[1]->addErrors($this->handleValidatorErrors($validatorErrors));
+                            break;
+                        }
+                    }
+                    break;
+
+                case self::NODE_OP_VALIDATE_LIST:
+                    // opt: 1 => node, 2 => optionName, 3 => validators
+                    foreach ($op[3] as $validator) {
+                        if ($validatorErrors = $validator($op[1]->ref[$op[2]], ...$context)) {
+                            $op[1]->addErrors($this->handleValidatorErrors($validatorErrors), $op[2]);
+                            break;
+                        }
+                    }
+                    break;
+
+                default:
+                    throw new \LogicException('Unexpected node operation type'); // @codeCoverageIgnore
             }
         }
-
-        // ensure array value if this is a node list
-        if ($option->list && !is_array($value)) {
-            $node->addError(new InvalidTypeError('array', $option->nullable, $value), $option->name);
-
-            return false;
-        }
-
-        // validate emptiness
-        if (!$option->allowEmpty && empty($value)) {
-            $node->addError(new EmptyValueError($option->nullable, $value), $option->name);
-
-            return false;
-        }
-
-        return true;
     }
 
-    private function validateLeafOptionValue(ResolverNode $node, LeafOption $option): bool
+    private function resolveLeafOptionValue(ResolverNode $node, LeafOption $option, array $context): bool
     {
         $value = $node->ref[$option->name];
 
@@ -338,11 +375,26 @@ class Resolver
             }
         }
 
+        // run normalizers
+        if ($option->normalizers) {
+            try {
+                foreach ($option->normalizers as $normalizer) {
+                    $value = $normalizer($value, ...$context);
+                }
+            } catch (NormalizerException $e) {
+                $node->addErrors($e->getErrors(), $option->name);
+
+                return false;
+            }
+
+            $node->ref[$option->name] = $value;
+        }
+
         // run validators
         if ($option->validators) {
             foreach ($option->validators as $validator) {
-                if ($errors = $validator($value)) {
-                    $node->addErrors($errors, $option->name);
+                if ($errors = $validator($value, ...$context)) {
+                    $node->addErrors($this->handleValidatorErrors($errors), $option->name);
 
                     return false;
                 }
@@ -352,18 +404,33 @@ class Resolver
         return true;
     }
 
-    private function normalizeLeafOptionValue(ResolverNode $node, LeafOption $option): bool
+    private function resolveNodeOptionValue(ResolverNode $node, NodeOption $option): bool
     {
-        if ($option->normalizers) {
-            try {
-                foreach ($option->normalizers as $normalizer) {
-                    $node->ref[$option->name] = $normalizer($node->ref[$option->name]);
-                }
-            } catch (NormalizerException $e) {
-                $node->addErrors($e->getErrors(), $option->name);
+        $value = $node->ref[$option->name];
+
+        // null check
+        if ($value === null) {
+            if ($option->nullable) {
+                return true;
+            } else {
+                $node->addError(new InvalidTypeError('array', false, null), $option->name);
 
                 return false;
             }
+        }
+
+        // ensure array value if this is a node list
+        if ($option->list && !is_array($value)) {
+            $node->addError(new InvalidTypeError('array', $option->nullable, $value), $option->name);
+
+            return false;
+        }
+
+        // validate emptiness
+        if (!$option->allowEmpty && empty($value)) {
+            $node->addError(new EmptyValueError($option->nullable, $value), $option->name);
+
+            return false;
         }
 
         return true;
@@ -380,6 +447,20 @@ class Resolver
             // instance of a class
             return $value instanceof $expectedType;
         }
+    }
+
+    /**
+     * @return Error[]
+     */
+    private function handleValidatorErrors($errors): array
+    {
+        $errorObjects = [];
+
+        foreach ((array) $errors as $error) {
+            $errorObjects[] = $error instanceof Error ? $error : new InvalidOptionError((string) $error);
+        }
+
+        return $errorObjects;
     }
 
     private static function isNumber($value): bool

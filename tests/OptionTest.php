@@ -6,7 +6,7 @@ use Kuria\DevMeta\Test;
 use Kuria\Options\Option\LeafOption;
 use Kuria\Options\Traits\OptionAssertionTrait;
 
-class OptionFactoryTest extends Test
+class OptionTest extends Test
 {
     use OptionAssertionTrait;
 
@@ -15,7 +15,7 @@ class OptionFactoryTest extends Test
      */
     function testShouldCreateOptionViaStaticFactory(string $staticMethod, array $args, array $expectedProps)
     {
-        $this->assertOption($expectedProps, OptionFactory::{$staticMethod}(...$args));
+        $this->assertOption($expectedProps, Option::{$staticMethod}(...$args));
     }
 
     function provideStaticFactories()

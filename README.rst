@@ -14,13 +14,14 @@ Features
 ********
 
 - type validation
+- typed lists
 - nullable options
+- choices
 - default values
-- lazy defaults that may depend on other options
+- lazy defaults (that may depend on other options)
 - custom validators and normalizers
-- typed lists (``string[]``, ``int[]``, etc.)
-- options limited to a set of choices
 - nested options (multi-dimensional arrays)
+- custom resolver context
 
 
 Requirements
@@ -48,7 +49,7 @@ See `Handling validation errors`_.
    <?php
 
    use Kuria\Options\Resolver;
-   use Kuria\Options\OptionFactory as Option;
+   use Kuria\Options\Option;
 
    // create a resolver
    $resolver = new Resolver();
@@ -56,7 +57,7 @@ See `Handling validation errors`_.
    // define options
    $resolver->addOption(
        Option::string('path'),
-      Option::int('interval')->default(null)
+       Option::int('interval')->default(null)
    );
 
    // resolve an array
@@ -77,17 +78,73 @@ Output:
 Working with ``Node`` instances
 -------------------------------
 
-``Resolver->resolve()`` returns a ``Node`` instance with the resolved options.
+By default, ``Resolver->resolve()`` returns a ``Node`` instance with the resolved options.
 
 - ``Node`` implements ``ArrayAccess``, so the individual options can be acessed
   using array syntax: ``$node['option']``
 
-- `Lazy default values <Lazy default values (leaf-only)_>`_ are resolved once that
-  option is read (or when ``toArray()`` is called).
+- `lazy default values <Lazy default values (leaf-only)_>`_ are resolved once that
+  option is read (or when ``toArray()`` is called)
 
-- Nested `node options <Node options_>`_ are also returned as ``Node`` instances.
+- nested `node options <Node options_>`_ are also returned as ``Node`` instances
 
-  If you need to work exclusively with arrays, use ``$node->toArray()``.
+  (if you need to work exclusively with arrays, use ``$node->toArray()``)
+
+
+Resolver context
+----------------
+
+``Resolver->resolve()`` accepts a second argument, which may be an array of additional arguments
+to pass to all validators and normalizers. The values may be of any type.
+
+.. code:: php
+
+   <?php
+
+   use Kuria\Options\Option;
+   use Kuria\Options\Resolver;
+
+   $resolver = new Resolver();
+
+   $resolver->addOption(
+       Option::string('option')
+           ->normalize(function (string $value, $foo, $bar) {
+               echo 'NORMALIZE: ';
+               var_dump(func_get_args());
+
+               return $value;
+           })
+           ->validate(function (string $value, $foo, $bar) {
+               echo 'VALIDATE: ';
+               var_dump(func_get_args());
+           })
+   );
+
+   $node = $resolver->resolve(
+       ['option' => 'value'],
+       ['context argument 1', 'context argument 2']
+   );
+
+Output:
+
+::
+
+  NORMALIZE: array(3) {
+    [0] =>
+    string(5) "value"
+    [1] =>
+    string(18) "context argument 1"
+    [2] =>
+    string(18) "context argument 2"
+  }
+  VALIDATE: array(3) {
+    [0] =>
+    string(5) "value"
+    [1] =>
+    string(18) "context argument 1"
+    [2] =>
+    string(18) "context argument 2"
+  }
 
 
 Defining options
@@ -112,10 +169,7 @@ child option
 Option factories
 ----------------
 
-The ``OptionFactory`` class provides a number of static factories to create option
-instances.
-
-(Examples in this README import ``OptionFactory`` with the ``Option`` alias.)
+The ``Option`` class provides a number of static factories to create option instances.
 
 ========================================== ===================================================
 Factory                                    Description
@@ -181,7 +235,7 @@ All methods implement a fluent interface, for example:
 
    <?php
 
-   use Kuria\Options\OptionFactory as Option;
+   use Kuria\Options\Option;
 
    Option::string('name')
       ->default('foo')
@@ -212,7 +266,6 @@ Makes the option optional and specifies a default value.
 
 - default value of `a node option <opt_terms_>`_ must be an array or ``NULL``
   and is validated and normalized according to the specified `child options <opt_terms_>`_
-  and validators
 
 
 Lazy default values (leaf-only)
@@ -225,7 +278,7 @@ To specify a lazy default value, pass a closure with the following signature:
    <?php
 
    use Kuria\Options\Node;
-   use Kuria\Options\OptionFactory as Option;
+   use Kuria\Options\Option;
 
    Option::string('foo')->default(function (Node $node) {
        // return value can also depend on other options
@@ -280,40 +333,95 @@ A value is considered empty if `PHP's empty() <http://php.net/manual/en/function
 returns ``TRUE``.
 
 
-``validate()``
-^^^^^^^^^^^^^^
+``normalize(callable $normalizer)``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Append a validator to the option. Each validator can validate the value and return
-an array of errors or ``NULL``.
+Append a normalizer to the option. The normalizer should accept a value
+and return the normalized value or throw ``Kuria\Options\Exception\NormalizerException``
+on failure.
 
-- validators are not called if the type of the value is not valid
-- multiple validators are called in the order they were appended
-- if a validator returns one or more errors, no other validators of that option
-  will be called
-- the order in which options are validated is undefined
+See `Normalizer and validator value types`_.
 
-The type of the value passed to the validator depends on the option:
-
-- ``Option::list()``, ``Option::choiceList()`` - an array of values
-- ``Option::node()`` - a ``Node`` instance
-- ``Option::nodeList()`` - an array of ``Node`` instances
-- other - depends on the type of the option (``string``, ``int``, etc.)
+- normalizers are called before validators defined by ``validate()``
+- normalizers are called in the order they were appended
+- normalizers are not called if the type of the value is not valid
+- the order in which options are normalized is undefined
+  (but `node options <opt_terms_>`_ are normalized in child-first order)
 
 .. code:: php
 
    <?php
 
-   use Kuria\Options\Error\InvalidOptionError;
+   use Kuria\Options\Resolver;
+   use Kuria\Options\Option;
+
+   $resolver = new Resolver();
+
+   $resolver->addOption(
+       Option::string('name')->normalize('trim')
+   );
+
+   var_dump($resolver->resolve(['name' => '  foo bar  ']));
+
+
+Output:
+
+::
+
+  object(Kuria\Options\Node)#7 (1) {
+    ["name"]=>
+    string(7) "foo bar"
+  }
+
+.. NOTE::
+
+   To normalize all options at the root level, define one or more normalizers
+   using ``$resolver->addNormalizer()``.
+
+.. TIP::
+
+   It is possible to use normalizers to convert nodes into custom objects,
+   so you don't have to work with anonymous ``Node`` objects.
+
+.. TIP::
+
+   It is possible to pass additional arguments to all normalizers and validators.
+   See `Resolver context`_.
+
+
+``validate(callable $validator)``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Append a validator to the option. The validator should accept and validate a value.
+
+- validators are called after normalizers defined by ``normalize()``
+- validators are called in the order they were appended
+- validators are not called if the type of the value is not valid
+  or its normalization has failed
+- if a validator returns one or more errors, no other validators of that option
+  will be called
+- the order in which options are validated is undefined
+  (but `node options <opt_terms_>`_ are validated in child-first order)
+
+The validator should return one of the following:
+
+- ``NULL`` or an empty array if there no errors
+- errors as a ``string``, an array of strings or Error instances
+
+.. code:: php
+
+   <?php
+
    use Kuria\Options\Exception\ResolverException;
    use Kuria\Options\Resolver;
-   use Kuria\Options\OptionFactory as Option;
+   use Kuria\Options\Option;
 
    $resolver = new Resolver();
 
    $resolver->addOption(
       Option::string('email')->validate(function (string $email) {
           if (filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
-              return [new InvalidOptionError('must be a valid email address')];
+              return 'must be a valid email address';
           }
       })
    );
@@ -333,44 +441,15 @@ Output:
   1) email: must be a valid email address
 
 
-.. _Normalize:
+.. NOTE::
 
-``normalize(callable $normalizer)`` (leaf-only)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   To validate all options at the root level, define one or more validators
+   using ``$resolver->addValidator()``.
 
-Append a normalizer to a leaf option. Each normalizer can modify the value or throw
-``Kuria\Options\Exception\NormalizerException`` on failure.
+.. TIP::
 
-- normalizers are not called if the type of the value is not valid
-- normalizers are called before validators defined by `validate()`_
-- multiple normalizers are called in the order they were appended
-- the order in which options are normalized is undefined
-
-.. code:: php
-
-   <?php
-
-   use Kuria\Options\Resolver;
-   use Kuria\Options\OptionFactory as Option;
-
-   $resolver = new Resolver();
-
-   $resolver->addOption(
-       Option::string('name')->normalize(function (string $value) {
-           return trim($value);
-       })
-   );
-
-   var_dump($resolver->resolve(['name' => '  foo bar  ']));
-
-Output:
-
-::
-
-  object(Kuria\Options\Node)#7 (1) {
-    ["name"]=>
-    string(7) "foo bar"
-  }
+   It is possible to pass additional arguments to all normalizers and validators.
+   See `Resolver context`_.
 
 
 Supported types
@@ -396,6 +475,23 @@ class or interface (or their descendants).
 An option defined as nullable will also accept a ``NULL`` value. See `nullable()`_.
 
 
+Normalizer and validator value types
+------------------------------------
+
+The type of the value passed to normalizers and validators depend on the type
+of the option.
+
+- ``Option::list()``, ``Option::choiceList()`` - an array of values
+- ``Option::node()`` - a ``Node`` instance
+- ``Option::nodeList()`` - an array of ``Node`` instances
+- other - depends on the type of the option (``string``, ``int``, etc.)
+
+.. NOTE::
+
+   A normalizer may modify or replace the value (including its type) before
+   it is passed to subsequent normalizers and validators.
+
+
 Node options
 ------------
 
@@ -409,7 +505,7 @@ to resolve more complex structures.
 
    <?php
 
-   use Kuria\Options\OptionFactory as Option;
+   use Kuria\Options\Option;
    use Kuria\Options\Resolver;
 
    $resolver = new Resolver();
@@ -450,7 +546,7 @@ The specific errors can be retrieved by calling ``getErrors()`` on the exception
 
    use Kuria\Options\Resolver;
    use Kuria\Options\Exception\ResolverException;
-   use Kuria\Options\OptionFactory as Option;
+   use Kuria\Options\Option;
 
    $resolver = new Resolver();
 
@@ -509,7 +605,7 @@ instances of the class. If needed, the cache can be cleared by calling
 
    use Kuria\Options\Integration\StaticOptionsTrait;
    use Kuria\Options\Node;
-   use Kuria\Options\OptionFactory as Option;
+   use Kuria\Options\Option;
    use Kuria\Options\Resolver;
 
    class Foo

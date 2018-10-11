@@ -20,6 +20,7 @@ class StaticOptionsTraitTest extends Test
         );
 
         $this->assertSame(1, Configurable::$defineOptionsCallCount); // initial call
+        $this->assertSame(['Foo'], Configurable::$lastValidatorArgs);
 
         $this->assertSame(
             ['name' => 'Bar', 'score' => 123],
@@ -27,6 +28,7 @@ class StaticOptionsTraitTest extends Test
         );
 
         $this->assertSame(1, Configurable::$defineOptionsCallCount); // should be cached
+        $this->assertSame(['Bar'], Configurable::$lastValidatorArgs);
 
         $this->assertSame(0, ConfigurableChild::$defineOptionsCallCount); // initial state
 
@@ -36,6 +38,7 @@ class StaticOptionsTraitTest extends Test
         );
 
         $this->assertSame(1, ConfigurableChild::$defineOptionsCallCount); // initial call
+        $this->assertSame(['Foo'], Configurable::$lastValidatorArgs);
 
         $this->assertSame(
             ['name' => 'Bar', 'score' => 123, 'level' => 5],
@@ -43,6 +46,7 @@ class StaticOptionsTraitTest extends Test
         );
 
         $this->assertSame(1, ConfigurableChild::$defineOptionsCallCount); // should be cached
+        $this->assertSame(['Bar'], Configurable::$lastValidatorArgs);
     }
 
     /**
@@ -80,5 +84,18 @@ class StaticOptionsTraitTest extends Test
 
         $this->assertSame(2, Configurable::$defineOptionsCallCount); // should be cached again
         $this->assertSame(2, ConfigurableChild::$defineOptionsCallCount); // should be cached again
+    }
+
+    /**
+     * @depends testShouldClearConfigResolverCache
+     */
+    function testShouldResolveOptionsWithContext()
+    {
+        $this->assertSame(
+            ['name' => 'Quux', 'score' => 0],
+            Configurable::resolveOptions(['name' => 'Quux'], ['foo', 123])->toArray()
+        );
+
+        $this->assertSame(['Quux', 'foo', 123], Configurable::$lastValidatorArgs);
     }
 }

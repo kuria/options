@@ -41,10 +41,11 @@ trait StaticOptionsTrait
      * Resolve options
      *
      * @throws ResolverException on failure
+     * @return Node|mixed
      */
-    protected static function resolveOptions($options): Node
+    protected static function resolveOptions($options, array $context = [])
     {
-        return self::getOptionsResolver()->resolve($options);
+        return self::getOptionsResolver()->resolve($options, $context);
     }
 
     private static function getOptionsResolver(): Resolver

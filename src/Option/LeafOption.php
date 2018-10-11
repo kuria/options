@@ -7,20 +7,17 @@ use Kuria\Options\Node;
 /**
  * Leaf option
  *
- * The public properties are read-only. Use OptionFactory to build the instances.
+ * The public properties are read-only. Use OptionFactory to build instances.
  *
- * @see \Kuria\Options\OptionFactory
+ * @see \Kuria\Options\Option
  */
-class LeafOption extends Option
+class LeafOption extends OptionDefinition
 {
     /** @var string|null read-only */
     public $type;
 
     /** @var array|null read-only */
     public $choices;
-
-    /** @var callable[]|null read-only */
-    public $normalizers;
 
     /** @var bool|null */
     private $defaultIsLazy;
@@ -32,7 +29,7 @@ class LeafOption extends Option
         $this->type = $type;
     }
 
-    function required(): Option
+    function required(): OptionDefinition
     {
         $this->defaultIsLazy = null;
 
@@ -72,23 +69,5 @@ class LeafOption extends Option
                 // the typehint must be the Node class
                 && $firstParamType->getName() === Node::class
             );
-    }
-
-    /**
-     * Append a normalizer
-     *
-     * Callback signature: ($value): mixed
-     *
-     * It may throw NormalizerException on failure.
-     *
-     * @see \Kuria\Options\Exception\NormalizerException
-     *
-     * @return $this
-     */
-    function normalize(callable $normalizer): self
-    {
-        $this->normalizers[] = $normalizer;
-
-        return $this;
     }
 }

@@ -97,6 +97,7 @@ class Node implements \Countable, \ArrayAccess, \IteratorAggregate
         return key_exists($offset, $this->options) || isset($this->lazyOptions[$offset]);
     }
 
+    #[\ReturnTypeWillChange]
     function &offsetGet($offset)
     {
         if (key_exists($offset, $this->options)) {

@@ -1,6 +1,12 @@
 Changelog
 #########
 
+2.0.1
+*****
+
+- PHP 8.1 compatibility
+
+
 2.0.0
 *****
 

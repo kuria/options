@@ -237,7 +237,7 @@ class Resolver
                 }
             }
             // replace resolver node reference with a node
-            $node->ref = new Node($node->path, $node->ref, $lazyOptions);
+            $node->ref = new Node($node->path, $node->ref, $lazyOptions, $context);
         }
 
         // run pending node operations if there are no errors

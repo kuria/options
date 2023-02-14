@@ -487,6 +487,22 @@ class ResolverTest extends Test
         $this->assertTrue($lazyCalled);
     }
 
+    function testShouldResolveLazyDefaultWithContext()
+    {
+        $resolver = $this->createResolver(
+            Option::any('option')->default(function (Node $node, string $a, int $b) {
+                return sprintf('%s-%d', $a, $b);
+            })
+        );
+
+        $node = $resolver->resolve([], ['foo', 123]);
+
+        $this->assertSame(
+            ['option' => 'foo-123'],
+            $node->toArray()
+        );
+    }
+
     /**
      * @dataProvider provideChoices
      */

@@ -1,6 +1,12 @@
 Changelog
 #########
 
+2.1.0
+*****
+
+- context arguments are now passed to lazy default closures as well
+
+
 2.0.1
 *****
 

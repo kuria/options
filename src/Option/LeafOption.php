@@ -7,7 +7,7 @@ use Kuria\Options\Node;
 /**
  * Leaf option
  *
- * The public properties are read-only. Use OptionFactory to build instances.
+ * The public properties are read-only. Use the Option factory class to build instances.
  *
  * @see \Kuria\Options\Option
  */
@@ -62,8 +62,8 @@ class LeafOption extends OptionDefinition
     {
         return $this->defaultIsLazy ?? (
             $this->defaultIsLazy = $this->default instanceof \Closure
-                // must have a single required parameter
-                && (new \ReflectionFunction($this->default))->getNumberOfRequiredParameters() === 1
+                // must have at least one required parameter
+                && (new \ReflectionFunction($this->default))->getNumberOfRequiredParameters() >= 1
                 // the parameter must have a typehint
                 && ($firstParamType = (new \ReflectionParameter($this->default, 0))->getType()) instanceof \ReflectionNamedType
                 // the typehint must be the Node class

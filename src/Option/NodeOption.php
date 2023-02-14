@@ -5,7 +5,7 @@ namespace Kuria\Options\Option;
 /**
  * Node option
  *
- * The public properties are read-only. Use OptionFactory to build instances.
+ * The public properties are read-only. Use the Option factory class to build instances.
  *
  * @see \Kuria\Options\Option
  */

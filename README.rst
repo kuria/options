@@ -95,12 +95,11 @@ Resolver context
 ----------------
 
 ``Resolver->resolve()`` accepts a second argument, which may be an array of additional arguments
-to pass to all validators and normalizers. The values may be of any type.
+to pass to all validators, normalizers and lazy default closures. The values may be of any type.
 
 .. code:: php
 
-   <?php
-
+   use Kuria\Options\Node;
    use Kuria\Options\Option;
    use Kuria\Options\Resolver;
 
@@ -109,42 +108,35 @@ to pass to all validators and normalizers. The values may be of any type.
    $resolver->addOption(
        Option::string('option')
            ->normalize(function (string $value, $foo, $bar) {
-               echo 'NORMALIZE: ';
-               var_dump(func_get_args());
+               echo 'NORMALIZE: ', $foo, ', ', $bar, "\n";
 
                return $value;
            })
            ->validate(function (string $value, $foo, $bar) {
-               echo 'VALIDATE: ';
-               var_dump(func_get_args());
+               echo 'VALIDATE: ', $foo, ', ', $bar, "\n";
+           }),
+       Option::string('optionWithLazyDefault')
+           ->default(function (Node $node, $foo, $bar) {
+               echo 'DEFAULT: ', $foo, ', ', $bar, "\n";
+
+               return 'value';
            })
    );
 
-   $node = $resolver->resolve(
+   $options = $resolver->resolve(
        ['option' => 'value'],
        ['context argument 1', 'context argument 2']
-   );
+   )->toArray();
+
+
 
 Output:
 
 ::
 
-  NORMALIZE: array(3) {
-    [0] =>
-    string(5) "value"
-    [1] =>
-    string(18) "context argument 1"
-    [2] =>
-    string(18) "context argument 2"
-  }
-  VALIDATE: array(3) {
-    [0] =>
-    string(5) "value"
-    [1] =>
-    string(18) "context argument 1"
-    [2] =>
-    string(18) "context argument 2"
-  }
+  NORMALIZE: context argument 1, context argument 2
+  VALIDATE: context argument 1, context argument 2
+  DEFAULT: context argument 1, context argument 2
 
 
 Defining options
@@ -297,6 +289,11 @@ value stored for later use (so it will not be called more than once).
 
    `Node options <opt_terms_>`_ do not support lazy default values.
 
+.. TIP::
+
+   It is possible to pass additional arguments to all lazy default closures.
+   See `Resolver context`_.
+
 
 ``nullable()``
 ^^^^^^^^^^^^^^
@@ -385,7 +382,7 @@ Output:
 
 .. TIP::
 
-   It is possible to pass additional arguments to all normalizers and validators.
+   It is possible to pass additional arguments to all normalizers.
    See `Resolver context`_.
 
 
@@ -448,7 +445,7 @@ Output:
 
 .. TIP::
 
-   It is possible to pass additional arguments to all normalizers and validators.
+   It is possible to pass additional arguments to all validators.
    See `Resolver context`_.
 
 

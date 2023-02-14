@@ -23,14 +23,18 @@ class Node implements \Countable, \ArrayAccess, \IteratorAggregate
     /** @var array|null */
     private $lazyOptionCallMap;
 
+    /** @var array */
+    private $context;
+
     /**
      * @param callable[] $lazyOptions
      */
-    function __construct(array $path, array $options, array $lazyOptions = [])
+    function __construct(array $path, array $options, array $lazyOptions = [], array $context = [])
     {
         $this->path = $path;
         $this->options = $options; // assign by value
         $this->lazyOptions = $lazyOptions;
+        $this->context = $context;
     }
 
     function __debugInfo()
@@ -149,7 +153,7 @@ class Node implements \Countable, \ArrayAccess, \IteratorAggregate
         $this->lazyOptionCallMap[$name] = true;
 
         try {
-            $this->options[$name] = $this->lazyOptions[$name]($this);
+            $this->options[$name] = $this->lazyOptions[$name]($this, ...$this->context);
             unset($this->lazyOptions[$name]);
         } finally {
             unset($this->lazyOptionCallMap[$name]);
